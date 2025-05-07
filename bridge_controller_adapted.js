@@ -125,7 +125,7 @@ class BridgeControllerAdapted extends EventEmitter {
     if (this.attacker_if) {
         os_cmd(`Allow OUTPUT on attacker interface: ${this.attacker_if}`, `iptables -A OUTPUT -o ${this.attacker_if} -j ACCEPT`);
         os_cmd(`Allow OUTPUT on attacker interface: ${this.attacker_if}`, `ebtables -A OUTPUT -o ${this.attacker_if} -j ACCEPT`);
-        // os_cmd(`Allow OUTPUT on attacker interface: ${this.attacker_if}`, `arptables -A OUTPUT -o ${this.attacker_if} -j ACCEPT`); // Likely not needed for DHCP server
+        os_cmd(`Allow OUTPUT on attacker interface: ${this.attacker_if}`, `arptables -A OUTPUT -o ${this.attacker_if} -j ACCEPT`); // Added arptables rule
     }
 
 

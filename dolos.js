@@ -15,18 +15,16 @@ console.log(fs.readFileSync(__dirname + "/banner.txt", "utf8"))
 // --- Argument Parsing ---
 const args = process.argv.slice(2);
 const parsedArgs = {};
-for (let i = 0; i < args.length; i++) {
-  if (args[i].startsWith('--')) {
-    const key = args[i].substring(2);
-    const nextArg = args[i+1];
-    if (nextArg && !nextArg.startsWith('--')) {
-      parsedArgs[key] = nextArg;
-      i++; // Skip next arg since it's a value
-    } else {
-      parsedArgs[key] = true; // For boolean flags
-    }
+args.forEach(arg => {
+  if (arg.startsWith('--')) {
+    const [keyWithValue, ...rest] = arg.substring(2).split('=');
+    const key = keyWithValue;
+    // If there's a value after '=', use it, otherwise treat as boolean flag
+    const value = rest.length > 0 ? rest.join('=') : true;
+    parsedArgs[key] = value;
   }
-}
+});
+
 
 const parsedConfig = {
   mgmt_if: parsedArgs.mgmt_if || 'wan', // Default if not provided
@@ -51,10 +49,20 @@ console.log(parsedConfig);
 
 var macs = JSON.parse(fs.readFileSync(__dirname + "/mac_to_vendor.js", "utf8"))
 
-//read keystrokes from cmdline
-const readline = require('readline')
-readline.emitKeypressEvents(process.stdin)
-process.stdin.setRawMode(true)
+//read keystrokes from cmdline only if running in a TTY
+const readline = require('readline');
+if (process.stdin.isTTY) {
+  try {
+    readline.emitKeypressEvents(process.stdin);
+    process.stdin.setRawMode(true);
+    console.log("TTY detected, enabling keypress events (Ctrl+C to exit handled by shell).");
+  } catch (e) {
+    console.warn("Could not set raw mode on stdin, keypress events disabled.", e.message);
+  }
+} else {
+  console.log("Not running in TTY, keypress events disabled.");
+}
+
 
 //custom class to manage the bridge interface, set iptables/ebtables/arptables rules, and update system network info 
 const BridgeControllerAdapted = require('./bridge_controller_adapted.js')
@@ -62,22 +70,31 @@ const BridgeControllerAdapted = require('./bridge_controller_adapted.js')
 var bridge_controller = new BridgeControllerAdapted(parsedConfig)
 bridge_controller.start_mitm_operations() // Changed from start_bridge()
 
-process.stdin.on('keypress', (str, key) => {
-  if (key.ctrl && key.name === 'c') {
-    // Cleanup is now primarily handled by dolos_run.sh trap.
-    // This will call cleanup_rules_and_exit(true) which flushes rules and exits Node.
-    bridge_controller.flush_tables(true)
-  } else if (key.name === 'a') {
-    bridge_controller.allow_internet_traffic()
-  } else if (key.name === 'd') {
-    bridge_controller.send_dhcp_probe()
-  } else if (key.name === 'i') {
-    console.log("Network Info")
-    console.log(JSON.stringify(bridge_controller.net_info.print_info(), null, 4))
-    console.log("ARP Table")
-    console.log(JSON.stringify(bridge_controller.net_info.arp_table.entries,null, 4))
-  }
-})
+if (process.stdin.isTTY) {
+  process.stdin.on('keypress', (str, key) => {
+    if (key.ctrl && key.name === 'c') {
+      // Let the shell trap handle cleanup primarily.
+      // This might still be useful as a secondary exit trigger.
+      console.log("Ctrl+C pressed in Node.js, initiating shutdown...");
+      bridge_controller.flush_tables(true); // This will call process.exit()
+    } else if (key.name === 'a') {
+      console.log("Key 'a' pressed: Allowing internet traffic via MitM bridge...");
+      bridge_controller.allow_internet_traffic();
+    } else if (key.name === 'd') {
+      console.log("Key 'd' pressed: Sending DHCP probe...");
+      bridge_controller.send_dhcp_probe();
+    } else if (key.name === 'i') {
+      console.log("Key 'i' pressed: Displaying network info...");
+      console.log("Network Info");
+      console.log(JSON.stringify(bridge_controller.net_info.print_info(), null, 4));
+      console.log("ARP Table");
+      console.log(JSON.stringify(bridge_controller.net_info.arp_table.entries,null, 4));
+    }
+  });
+} else {
+  // If not in TTY, Ctrl+C won't be caught here, rely on shell trap in dolos_run.sh
+}
+// Removed duplicated lines from previous block here
 
 //favicon
 fastify.route({

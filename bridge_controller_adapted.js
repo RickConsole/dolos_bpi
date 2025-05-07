@@ -92,10 +92,22 @@ class BridgeControllerAdapted extends EventEmitter {
     // Set default OUTPUT policies to DROP
     // The dolos_run.sh script will handle IP forwarding, so BPI-R3 can still route if needed.
     // These rules prevent the BPI-R3 from initiating traffic from its MitM bridge IPs/MACs directly.
-    os_cmd('Use "policy" to allow loopback traffic', `iptables -A OUTPUT -o lo -j ACCEPT`)
+    os_cmd('Use "policy" to allow loopback traffic', `iptables -A OUTPUT -o lo -j ACCEPT`) // Allow loopback first
+
+    // --- Add specific ACCEPT rules for DHCP server BEFORE setting default DROP ---
+    if (this.attacker_bridge_name) {
+        // Allow DHCP server replies (out UDP port 67 -> 68)
+        os_cmd(`Allow OUTPUT DHCP Offer/ACK on ${this.attacker_bridge_name}`, `iptables -A OUTPUT -o ${this.attacker_bridge_name} -p udp --sport 67 --dport 68 -j ACCEPT`);
+        // Allow related ebtables traffic if needed (might not be strictly necessary if iptables rule works, but safer)
+        os_cmd(`Allow OUTPUT L2 for DHCP Offer/ACK on ${this.attacker_bridge_name}`, `ebtables -A OUTPUT -o ${this.attacker_bridge_name} -p IPv4 --ip-proto udp --ip-sport 67 --ip-dport 68 -j ACCEPT`);
+    }
+    // --- End of added lines ---
+
+    // Set default OUTPUT policies to DROP (These lines remain)
     os_cmd('Use "policy" to drop all outbound IP traffic from this device by default', `iptables -P OUTPUT DROP`)
     os_cmd('Use "policy" to drop all outbound Ethernet traffic from this device by default', `ebtables -P OUTPUT DROP`)
     os_cmd('Use "policy" to drop all outbound ARP traffic from this device by default', `arptables -P OUTPUT DROP`)
+
 
     // Allow traffic on interfaces not involved in MitM (e.g., management interface 'wan')
     // This list of interfaces is from the perspective of the Node.js script.
@@ -115,11 +127,12 @@ class BridgeControllerAdapted extends EventEmitter {
     }
 
     // Explicitly allow all OUTPUT traffic on the attacker bridge (needed for DHCP server, DNS, etc.)
-    if (this.attacker_bridge_name) {
-        os_cmd(`Allow OUTPUT on attacker bridge: ${this.attacker_bridge_name}`, `iptables -A OUTPUT -o ${this.attacker_bridge_name} -j ACCEPT`);
-        os_cmd(`Allow OUTPUT on attacker bridge: ${this.attacker_bridge_name}`, `ebtables -A OUTPUT -o ${this.attacker_bridge_name} -j ACCEPT`);
-        // os_cmd(`Allow OUTPUT on attacker bridge: ${this.attacker_bridge_name}`, `arptables -A OUTPUT -o ${this.attacker_bridge_name} -j ACCEPT`); // Likely not needed for DHCP server
-    }
+    // Commented out as we added specific DHCP rules earlier. If other services on attk_br need OUTPUT, uncomment or add specific rules.
+    // if (this.attacker_bridge_name) {
+    //     os_cmd(`Allow OUTPUT on attacker bridge: ${this.attacker_bridge_name}`, `iptables -A OUTPUT -o ${this.attacker_bridge_name} -j ACCEPT`);
+    //     os_cmd(`Allow OUTPUT on attacker bridge: ${this.attacker_bridge_name}`, `ebtables -A OUTPUT -o ${this.attacker_bridge_name} -j ACCEPT`);
+    //     // os_cmd(`Allow OUTPUT on attacker bridge: ${this.attacker_bridge_name}`, `arptables -A OUTPUT -o ${this.attacker_bridge_name} -j ACCEPT`); // Likely not needed for DHCP server
+    // }
 
 
     // Granular blocks for specific EtherTypes on OUTPUT (preventing BPI-R3 from sending these itself)

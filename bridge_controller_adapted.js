@@ -43,6 +43,8 @@ class BridgeControllerAdapted extends EventEmitter {
 
     // Subnet for attacker machines (e.g., "172.16.100.0/24")
     this.attacker_bridge_subnet = config.attacker_bridge_subnet;
+    // Name of the attacker bridge interface
+    this.attacker_bridge_name = config.attacker_bridge_name || "attk_br";
 
     // Other existing config parameters
     this.ephemeral_ports = config.ephemeral_ports || '61000-62000';
@@ -103,14 +105,22 @@ class BridgeControllerAdapted extends EventEmitter {
     // Example: os_cmd('Allow OUTPUT on management_if', `iptables -A OUTPUT -o ${this.config.mgmt_if} -j ACCEPT`)
     // For simplicity, we'll keep the original loop but note its dependency on 'interfaces' variable.
     for(const iface in interfaces){
-      // Exclude MitM bridge and its physical member interfaces from this explicit ACCEPT rule.
-      // Traffic for these will be handled by specific SNAT rules or allowed if originating from attacker_bridge.
-      if(![this.mitm_bridge_name, this.mitm_nic1, this.mitm_nic2].includes(iface)){
-        os_cmd(`Allow OUTPUT on non-MitM interface: ${iface}`, `ebtables -A OUTPUT -o ${iface} -j ACCEPT`)
-        os_cmd(`Allow OUTPUT on non-MitM interface: ${iface}`, `iptables -A OUTPUT -o ${iface} -j ACCEPT`)
-        os_cmd(`Allow OUTPUT on non-MitM interface: ${iface}`, `arptables -A OUTPUT -o ${iface} -j ACCEPT`)
+      // Exclude MitM bridge, its physical member interfaces, and the attacker bridge from this generic ACCEPT rule.
+      // Traffic for these will be handled by specific rules later (e.g., SNAT or explicit ACCEPT).
+      if(![this.mitm_bridge_name, this.mitm_nic1, this.mitm_nic2, this.attacker_bridge_name].includes(iface)){
+        os_cmd(`Allow OUTPUT on non-involved interface: ${iface}`, `ebtables -A OUTPUT -o ${iface} -j ACCEPT`)
+        os_cmd(`Allow OUTPUT on non-involved interface: ${iface}`, `iptables -A OUTPUT -o ${iface} -j ACCEPT`)
+        os_cmd(`Allow OUTPUT on non-involved interface: ${iface}`, `arptables -A OUTPUT -o ${iface} -j ACCEPT`)
       }
     }
+
+    // Explicitly allow all OUTPUT traffic on the attacker bridge (needed for DHCP server, DNS, etc.)
+    if (this.attacker_bridge_name) {
+        os_cmd(`Allow OUTPUT on attacker bridge: ${this.attacker_bridge_name}`, `iptables -A OUTPUT -o ${this.attacker_bridge_name} -j ACCEPT`);
+        os_cmd(`Allow OUTPUT on attacker bridge: ${this.attacker_bridge_name}`, `ebtables -A OUTPUT -o ${this.attacker_bridge_name} -j ACCEPT`);
+        // os_cmd(`Allow OUTPUT on attacker bridge: ${this.attacker_bridge_name}`, `arptables -A OUTPUT -o ${this.attacker_bridge_name} -j ACCEPT`); // Likely not needed for DHCP server
+    }
+
 
     // Granular blocks for specific EtherTypes on OUTPUT (preventing BPI-R3 from sending these itself)
     os_cmd('Additional granular block on other ARP types (OUTPUT)', `ebtables -A OUTPUT -p 0x0806 -j DROP`)
@@ -212,10 +222,11 @@ class BridgeControllerAdapted extends EventEmitter {
     // This loop might be redundant if policies are set to ACCEPT.
     // However, it ensures specific ACCEPT rules if other default policies were different.
     for(const iface in interfaces){
-      if(![this.mitm_bridge_name, this.mitm_nic1, this.mitm_nic2].includes(iface)){
-        os_cmd(`Ensure OUTPUT allowed on non-MitM interface: ${iface}`, `ebtables -A OUTPUT -o ${iface} -j ACCEPT || true`);
-        os_cmd(`Ensure OUTPUT allowed on non-MitM interface: ${iface}`, `iptables -A OUTPUT -o ${iface} -j ACCEPT || true`);
-        os_cmd(`Ensure OUTPUT allowed on non-MitM interface: ${iface}`, `arptables -A OUTPUT -o ${iface} -j ACCEPT || true`);
+       // Exclude MitM bridge, its physical member interfaces, and the attacker bridge
+      if(![this.mitm_bridge_name, this.mitm_nic1, this.mitm_nic2, this.attacker_bridge_name].includes(iface)){
+        os_cmd(`Ensure OUTPUT allowed on non-involved interface: ${iface}`, `ebtables -A OUTPUT -o ${iface} -j ACCEPT || true`);
+        os_cmd(`Ensure OUTPUT allowed on non-involved interface: ${iface}`, `iptables -A OUTPUT -o ${iface} -j ACCEPT || true`);
+        os_cmd(`Ensure OUTPUT allowed on non-involved interface: ${iface}`, `arptables -A OUTPUT -o ${iface} -j ACCEPT || true`);
       }
     }
   }

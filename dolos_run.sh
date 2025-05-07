@@ -2,16 +2,16 @@
 
 # --- Configuration ---
 # Management interface for BPI-R3's own internet and Dolos Web UI
-MGMT_IF="wan"
+MGMT_IF="enp1s0"
 
 # MitM Bridge: Connects 802.1x switch and trusted supplicant
-MITM_SWITCH_IF="lan0"       # Connects to 802.1x port
-MITM_SUPPLICANT_IF="lan1"   # Connects to trusted device
+MITM_SWITCH_IF="enp2s0"       # Connects to 802.1x port
+MITM_SUPPLICANT_IF="enp3s0"   # Connects to trusted device
 MITM_BRIDGE="dolos_bridge"
 
 # Attacker Network Bridge: For operator machines
-ATTACKER_IF1="lan2"
-ATTACKER_IF2="lan3"
+ATTACKER_IF1="enp4s0"
+#ATTACKER_IF2="lan3" # optional if you have another interface
 ATTACKER_BRIDGE="attk_br" # Renamed: Interface names must be <= 15 chars
 ATTACKER_BRIDGE_IP="172.16.100.1"
 ATTACKER_BRIDGE_NETMASK_CIDR="24" # Just the CIDR number
@@ -180,6 +180,7 @@ NODE_ARGS="${NODE_ARGS} --mitm_bridge=${MITM_BRIDGE}"
 NODE_ARGS="${NODE_ARGS} --mitm_switch_if=${MITM_SWITCH_IF}"
 NODE_ARGS="${NODE_ARGS} --mitm_supplicant_if=${MITM_SUPPLICANT_IF}"
 NODE_ARGS="${NODE_ARGS} --attacker_bridge_subnet=${ATTACKER_BRIDGE_IP%.*}.0/${ATTACKER_BRIDGE_NETMASK_CIDR}" # e.g. 172.16.100.0/24
+NODE_ARGS="${NODE_ARGS} --attacker_bridge=${ATTACKER_BRIDGE}" # Pass the attacker bridge name
 # Add other potential args needed by dolos.js/bridge_controller_adapted.js
 # NODE_ARGS="${NODE_ARGS} --use_network_manager=false" # Example if needed
 

@@ -47,7 +47,13 @@ cleanup() {
         log "Cleanup already in progress or completed."
         return
     fi
-    touch "$CLEANUP_LOCK_FILE"
+    # Check if lock file creation succeeded before proceeding
+    if ! touch "$CLEANUP_LOCK_FILE" 2>/dev/null; then
+        log "Failed to create cleanup lock file. Exiting cleanup."
+        # Optionally exit with an error code?
+        return 1
+    fi
+
 
     log "Initiating cleanup..."
 
@@ -64,14 +70,22 @@ cleanup() {
     run_cmd sysctl -w net.ipv4.ip_forward=0
 
     log "Dismantling Attacker Bridge: $ATTACKER_BRIDGE"
-    run_cmd ip link set "$ATTACKER_IF1" nomaster 2>/dev/null || true
-    run_cmd ip link set "$ATTACKER_IF2" nomaster 2>/dev/null || true
+    if [ -n "$ATTACKER_IF1" ]; then
+      run_cmd ip link set "$ATTACKER_IF1" nomaster 2>/dev/null || true
+    fi
+    if [ -n "$ATTACKER_IF2" ]; then
+      run_cmd ip link set "$ATTACKER_IF2" nomaster 2>/dev/null || true
+    fi
     run_cmd ip link set "$ATTACKER_BRIDGE" down 2>/dev/null || true
     run_cmd ip link delete "$ATTACKER_BRIDGE" type bridge 2>/dev/null || true # Use type bridge for deletion
 
     log "Dismantling MitM Bridge: $MITM_BRIDGE"
-    run_cmd ip link set "$MITM_SWITCH_IF" nomaster 2>/dev/null || true
-    run_cmd ip link set "$MITM_SUPPLICANT_IF" nomaster 2>/dev/null || true
+    if [ -n "$MITM_SWITCH_IF" ]; then
+      run_cmd ip link set "$MITM_SWITCH_IF" nomaster 2>/dev/null || true
+    fi
+    if [ -n "$MITM_SUPPLICANT_IF" ]; then
+      run_cmd ip link set "$MITM_SUPPLICANT_IF" nomaster 2>/dev/null || true
+    fi
     run_cmd ip link set "$MITM_BRIDGE" down 2>/dev/null || true
     run_cmd ip link delete "$MITM_BRIDGE" type bridge 2>/dev/null || true # Use type bridge for deletion
 
@@ -96,10 +110,18 @@ cleanup() {
 trap cleanup SIGINT SIGTERM EXIT
 
 # --- Main Setup ---
-log "Starting Dolos BPI-R3 Environment Setup..."
+log "Starting Dolos Environment Setup..." # Generic name
 
 log "Isolating LAN interfaces..."
-for iface in "$MITM_SWITCH_IF" "$MITM_SUPPLICANT_IF" "$ATTACKER_IF1" "$ATTACKER_IF2"; do
+# Create a list of interfaces to isolate, filtering out empty ones
+interfaces_to_isolate=()
+[ -n "$MITM_SWITCH_IF" ] && interfaces_to_isolate+=("$MITM_SWITCH_IF")
+[ -n "$MITM_SUPPLICANT_IF" ] && interfaces_to_isolate+=("$MITM_SUPPLICANT_IF")
+[ -n "$ATTACKER_IF1" ] && interfaces_to_isolate+=("$ATTACKER_IF1")
+[ -n "$ATTACKER_IF2" ] && interfaces_to_isolate+=("$ATTACKER_IF2")
+
+for iface in "${interfaces_to_isolate[@]}"; do
+    log "Isolating $iface..."
     run_cmd ip link set "$iface" nomaster 2>/dev/null || true
     run_cmd ip link set "$iface" down 2>/dev/null || true # Ensure they are down before adding to new bridge
 done
@@ -107,23 +129,32 @@ done
 log "Creating MitM Bridge: $MITM_BRIDGE"
 run_cmd ip link add name "$MITM_BRIDGE" type bridge
 run_cmd ip link set "$MITM_BRIDGE" up
-run_cmd ip link set "$MITM_SWITCH_IF" master "$MITM_BRIDGE"
-run_cmd ip link set "$MITM_SUPPLICANT_IF" master "$MITM_BRIDGE"
-run_cmd ip link set "$MITM_SWITCH_IF" up
-run_cmd ip link set "$MITM_SUPPLICANT_IF" up
-# Set promiscuous mode for interfaces on MitM bridge
-run_cmd ip link set dev "$MITM_SWITCH_IF" promisc on
-run_cmd ip link set dev "$MITM_SUPPLICANT_IF" promisc on
+if [ -n "$MITM_SWITCH_IF" ]; then
+  run_cmd ip link set "$MITM_SWITCH_IF" master "$MITM_BRIDGE"
+  run_cmd ip link set "$MITM_SWITCH_IF" up
+  run_cmd ip link set dev "$MITM_SWITCH_IF" promisc on
+fi
+if [ -n "$MITM_SUPPLICANT_IF" ]; then
+  run_cmd ip link set "$MITM_SUPPLICANT_IF" master "$MITM_BRIDGE"
+  run_cmd ip link set "$MITM_SUPPLICANT_IF" up
+  run_cmd ip link set dev "$MITM_SUPPLICANT_IF" promisc on
+fi
 run_cmd ip link set dev "$MITM_BRIDGE" promisc on
 
 
 log "Creating Attacker Network Bridge: $ATTACKER_BRIDGE"
 run_cmd ip link add name "$ATTACKER_BRIDGE" type bridge
 run_cmd ip link set "$ATTACKER_BRIDGE" up
-run_cmd ip link set "$ATTACKER_IF1" master "$ATTACKER_BRIDGE"
-run_cmd ip link set "$ATTACKER_IF2" master "$ATTACKER_BRIDGE"
-run_cmd ip link set "$ATTACKER_IF1" up
-run_cmd ip link set "$ATTACKER_IF2" up
+# Add ATTACKER_IF1
+if [ -n "$ATTACKER_IF1" ]; then
+    run_cmd ip link set "$ATTACKER_IF1" master "$ATTACKER_BRIDGE"
+    run_cmd ip link set "$ATTACKER_IF1" up
+fi
+# Add ATTACKER_IF2 only if it's defined
+if [ -n "$ATTACKER_IF2" ]; then
+    run_cmd ip link set "$ATTACKER_IF2" master "$ATTACKER_BRIDGE"
+    run_cmd ip link set "$ATTACKER_IF2" up
+fi
 run_cmd ip addr add "${ATTACKER_BRIDGE_IP}/${ATTACKER_BRIDGE_NETMASK_CIDR}" dev "$ATTACKER_BRIDGE"
 
 log "Starting DHCP server on $ATTACKER_BRIDGE..."

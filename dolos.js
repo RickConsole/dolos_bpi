@@ -1,7 +1,8 @@
 var dateFormat = require('dateformat')
 const fs = require('fs')
+const os = require('os'); // Added for network interface IP
 const EventEmitter = require('events')
-const config = require('./config.js')
+// const config = require('./config.js') // Will be replaced by CLI args + defaults
 const fastify = require('fastify')({
   logger: true,
   bodyLimit: 19922944
@@ -10,7 +11,43 @@ const fastify = require('fastify')({
 fastify.register(require('fastify-socket.io'), {})
 
 console.log(fs.readFileSync(__dirname + "/banner.txt", "utf8"))
-console.log(config)
+
+// --- Argument Parsing ---
+const args = process.argv.slice(2);
+const parsedArgs = {};
+for (let i = 0; i < args.length; i++) {
+  if (args[i].startsWith('--')) {
+    const key = args[i].substring(2);
+    const nextArg = args[i+1];
+    if (nextArg && !nextArg.startsWith('--')) {
+      parsedArgs[key] = nextArg;
+      i++; // Skip next arg since it's a value
+    } else {
+      parsedArgs[key] = true; // For boolean flags
+    }
+  }
+}
+
+const parsedConfig = {
+  mgmt_if: parsedArgs.mgmt_if || 'wan', // Default if not provided
+  mitm_bridge_name: parsedArgs.mitm_bridge || 'dolos_bridge',
+  mitm_switch_if: parsedArgs.mitm_switch_if,
+  mitm_supplicant_if: parsedArgs.mitm_supplicant_if,
+  attacker_bridge_subnet: parsedArgs.attacker_bridge_subnet,
+  mitm_bridge_apipa_ip: parsedArgs.mitm_bridge_apipa_ip, // Will use default in BridgeControllerAdapted if undefined
+  mitm_bridge_mac: parsedArgs.mitm_bridge_mac,           // Will use default in BridgeControllerAdapted if undefined
+  use_network_manager: parsedArgs.use_network_manager === 'true' || parsedArgs.use_network_manager === true, // Ensure boolean
+
+  // Defaults from original config.js, can be overridden if passed as CLI args too
+  ephemeral_ports: parsedArgs.ephemeral_ports || '61000-62000',
+  virtual_gateway_ip: parsedArgs.virtual_gateway_ip || '169.254.66.55',
+  replace_default_route: parsedArgs.replace_default_route === 'true' || parsedArgs.replace_default_route === true || false,
+  run_command_on_success: parsedArgs.run_command_on_success === 'true' || parsedArgs.run_command_on_success === true || false,
+  autorun_command: parsedArgs.autorun_command || '',
+};
+
+console.log("Parsed Configuration:");
+console.log(parsedConfig);
 
 var macs = JSON.parse(fs.readFileSync(__dirname + "/mac_to_vendor.js", "utf8"))
 
@@ -20,13 +57,15 @@ readline.emitKeypressEvents(process.stdin)
 process.stdin.setRawMode(true)
 
 //custom class to manage the bridge interface, set iptables/ebtables/arptables rules, and update system network info 
-const BridgeController = require('./bridge_controller.js')
+const BridgeControllerAdapted = require('./bridge_controller_adapted.js')
 
-var bridge_controller = new BridgeController(config)
-bridge_controller.start_bridge()
+var bridge_controller = new BridgeControllerAdapted(parsedConfig)
+bridge_controller.start_mitm_operations() // Changed from start_bridge()
 
 process.stdin.on('keypress', (str, key) => {
   if (key.ctrl && key.name === 'c') {
+    // Cleanup is now primarily handled by dolos_run.sh trap.
+    // This will call cleanup_rules_and_exit(true) which flushes rules and exits Node.
     bridge_controller.flush_tables(true)
   } else if (key.name === 'a') {
     bridge_controller.allow_internet_traffic()
@@ -96,7 +135,7 @@ fastify.route({
     url: '/allow_internet_traffic',
     handler: async function (req, reply) {
         bridge_controller.allow_internet_traffic()
-        reply.send('added default route via mibr')
+        reply.send(`Added default route via MitM bridge ${parsedConfig.mitm_bridge_name}`)
     }
 })
 
@@ -160,14 +199,34 @@ fastify.ready(function(err){
     })
 })
 
+// Helper function to get IP of an interface
+function getInterfaceIp(interfaceName) {
+  const nets = os.networkInterfaces();
+  const results = {};
+
+  for (const name of Object.keys(nets)) {
+    if (name === interfaceName) {
+      for (const net of nets[name]) {
+        // Skip over non-IPv4 and internal (i.e. 127.0.0.1) addresses
+        if (net.family === 'IPv4' && !net.internal) {
+          return net.address;
+        }
+      }
+    }
+  }
+  return '0.0.0.0'; // Default if not found or no IP
+}
+
 // Run the server!
 const start = async () => {
-  fastify.listen(4444, (err) => {
+  const mgmtIpAddress = getInterfaceIp(parsedConfig.mgmt_if);
+  fastify.listen(4444, mgmtIpAddress, (err) => {
     if (err) {
       fastify.log.error(err)
       process.exit(1)
     }
-    fastify.log.info(`server listening on ${fastify.server.address().port}`)
+    // fastify.log.info(`server listening on ${fastify.server.address().port}`) // This might be null if host is specified
+    console.log(`Server listening on ${mgmtIpAddress}:${fastify.server.address().port}`);
   })
 }
 start()

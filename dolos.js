@@ -31,8 +31,10 @@ const parsedConfig = {
   mitm_bridge_name: parsedArgs.mitm_bridge || 'dolos_bridge',
   mitm_switch_if: parsedArgs.mitm_switch_if,
   mitm_supplicant_if: parsedArgs.mitm_supplicant_if,
-  attacker_bridge_subnet: parsedArgs.attacker_bridge_subnet,
-  attacker_bridge_name: parsedArgs.attacker_bridge || "attk_br", // Added attacker bridge name
+  attacker_if: parsedArgs.attacker_if, // Added physical attacker interface name
+  attacker_subnet: parsedArgs.attacker_subnet, // Added attacker subnet
+  // attacker_bridge_subnet: parsedArgs.attacker_bridge_subnet, // Removed
+  // attacker_bridge_name: parsedArgs.attacker_bridge || "attk_br", // Removed
   mitm_bridge_apipa_ip: parsedArgs.mitm_bridge_apipa_ip, // Will use default in BridgeControllerAdapted if undefined
   mitm_bridge_mac: parsedArgs.mitm_bridge_mac,           // Will use default in BridgeControllerAdapted if undefined
   use_network_manager: parsedArgs.use_network_manager === 'true' || parsedArgs.use_network_manager === true, // Ensure boolean

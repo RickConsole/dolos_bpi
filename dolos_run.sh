@@ -9,12 +9,12 @@ MITM_SWITCH_IF="enp2s0"       # Connects to 802.1x port
 MITM_SUPPLICANT_IF="enp3s0"   # Connects to trusted device
 MITM_BRIDGE="dolos_bridge"
 
-# Attacker Network Bridge: For operator machines
-ATTACKER_IF1="enp4s0"
-#ATTACKER_IF2="lan3" # optional if you have another interface
-ATTACKER_BRIDGE="attk_br" # Renamed: Interface names must be <= 15 chars
-ATTACKER_BRIDGE_IP="172.16.100.1"
-ATTACKER_BRIDGE_NETMASK_CIDR="24" # Just the CIDR number
+# Attacker Network Interface: For operator machines
+ATTACKER_IF1="enp4s0" # The single physical interface for attackers
+# ATTACKER_IF2="lan3" # Removed - No second attacker port in this setup
+# ATTACKER_BRIDGE="attk_br" # Removed - No bridge needed for single interface
+ATTACKER_NET_IP="172.16.100.1" # IP for the attacker interface itself
+ATTACKER_NET_CIDR="24" # Just the CIDR number
 ATTACKER_DHCP_RANGE_START="172.16.100.100"
 ATTACKER_DHCP_RANGE_END="172.16.100.200"
 ATTACKER_DHCP_LEASE_TIME="12h"
@@ -69,15 +69,14 @@ cleanup() {
     log "Disabling IP forwarding..."
     run_cmd sysctl -w net.ipv4.ip_forward=0
 
-    log "Dismantling Attacker Bridge: $ATTACKER_BRIDGE"
+    log "Cleaning up Attacker Interface: $ATTACKER_IF1"
     if [ -n "$ATTACKER_IF1" ]; then
-      run_cmd ip link set "$ATTACKER_IF1" nomaster 2>/dev/null || true
+      # Remove IP address assigned
+      run_cmd ip addr del "${ATTACKER_NET_IP}/${ATTACKER_NET_CIDR}" dev "$ATTACKER_IF1" 2>/dev/null || true
+      # Optionally set interface down or back to default state if needed
+      # run_cmd ip link set "$ATTACKER_IF1" down
     fi
-    if [ -n "$ATTACKER_IF2" ]; then
-      run_cmd ip link set "$ATTACKER_IF2" nomaster 2>/dev/null || true
-    fi
-    run_cmd ip link set "$ATTACKER_BRIDGE" down 2>/dev/null || true
-    run_cmd ip link delete "$ATTACKER_BRIDGE" type bridge 2>/dev/null || true # Use type bridge for deletion
+    # No bridge to dismantle
 
     log "Dismantling MitM Bridge: $MITM_BRIDGE"
     if [ -n "$MITM_SWITCH_IF" ]; then
@@ -113,15 +112,15 @@ trap cleanup SIGINT SIGTERM EXIT
 log "Starting Dolos Environment Setup..." # Generic name
 
 log "Isolating LAN interfaces..."
-# Create a list of interfaces to isolate, filtering out empty ones
-interfaces_to_isolate=()
-[ -n "$MITM_SWITCH_IF" ] && interfaces_to_isolate+=("$MITM_SWITCH_IF")
-[ -n "$MITM_SUPPLICANT_IF" ] && interfaces_to_isolate+=("$MITM_SUPPLICANT_IF")
-[ -n "$ATTACKER_IF1" ] && interfaces_to_isolate+=("$ATTACKER_IF1")
-[ -n "$ATTACKER_IF2" ] && interfaces_to_isolate+=("$ATTACKER_IF2")
+# Create a list of interfaces to isolate/configure, filtering out empty ones
+interfaces_to_configure=()
+[ -n "$MITM_SWITCH_IF" ] && interfaces_to_configure+=("$MITM_SWITCH_IF")
+[ -n "$MITM_SUPPLICANT_IF" ] && interfaces_to_configure+=("$MITM_SUPPLICANT_IF")
+[ -n "$ATTACKER_IF1" ] && interfaces_to_configure+=("$ATTACKER_IF1")
+# ATTACKER_IF2 is removed
 
-for iface in "${interfaces_to_isolate[@]}"; do
-    log "Isolating $iface..."
+for iface in "${interfaces_to_configure[@]}"; do
+    log "Preparing $iface..."
     run_cmd ip link set "$iface" nomaster 2>/dev/null || true
     run_cmd ip link set "$iface" down 2>/dev/null || true # Ensure they are down before adding to new bridge
 done
@@ -142,32 +141,34 @@ fi
 run_cmd ip link set dev "$MITM_BRIDGE" promisc on
 
 
-log "Creating Attacker Network Bridge: $ATTACKER_BRIDGE"
-run_cmd ip link add name "$ATTACKER_BRIDGE" type bridge
-run_cmd ip link set "$ATTACKER_BRIDGE" up
-# Add ATTACKER_IF1
+log "Configuring Attacker Network Interface: $ATTACKER_IF1"
 if [ -n "$ATTACKER_IF1" ]; then
-    run_cmd ip link set "$ATTACKER_IF1" master "$ATTACKER_BRIDGE"
+    # Assign IP directly to the physical interface
+    run_cmd ip addr add "${ATTACKER_NET_IP}/${ATTACKER_NET_CIDR}" dev "$ATTACKER_IF1"
+    # Ensure the interface is up
     run_cmd ip link set "$ATTACKER_IF1" up
+else
+    log "Attacker interface (ATTACKER_IF1) not defined. Skipping configuration."
 fi
-# Add ATTACKER_IF2 only if it's defined
-if [ -n "$ATTACKER_IF2" ]; then
-    run_cmd ip link set "$ATTACKER_IF2" master "$ATTACKER_BRIDGE"
-    run_cmd ip link set "$ATTACKER_IF2" up
-fi
-run_cmd ip addr add "${ATTACKER_BRIDGE_IP}/${ATTACKER_BRIDGE_NETMASK_CIDR}" dev "$ATTACKER_BRIDGE"
 
-log "Starting DHCP server on $ATTACKER_BRIDGE..."
-# Ensure dnsmasq doesn't fail if the interface isn't ready immediately
-sleep 1 
-run_cmd dnsmasq --interface="$ATTACKER_BRIDGE" \
-                --bind-interfaces \
-                --dhcp-range="${ATTACKER_DHCP_RANGE_START},${ATTACKER_DHCP_RANGE_END},${ATTACKER_DHCP_LEASE_TIME}" \
-                --dhcp-option=option:router,"${ATTACKER_BRIDGE_IP}" \
-                --dhcp-option=option:dns-server,"${ATTACKER_BRIDGE_IP}" `# Optionally serve DNS if dnsmasq is also a resolver` \
-                --no-resolv \
-                --no-hosts \
-                --listen-address="${ATTACKER_BRIDGE_IP}" \
+
+# Start DHCP server directly on the physical attacker interface
+if [ -n "$ATTACKER_IF1" ]; then
+    log "Starting DHCP server on $ATTACKER_IF1..."
+    # Ensure dnsmasq doesn't fail if the interface isn't ready immediately
+    sleep 1
+    run_cmd dnsmasq --interface="$ATTACKER_IF1" \
+                    --bind-interfaces \
+                    --dhcp-range="${ATTACKER_DHCP_RANGE_START},${ATTACKER_DHCP_RANGE_END},${ATTACKER_DHCP_LEASE_TIME}" \
+                    --dhcp-option=option:router,"${ATTACKER_NET_IP}" \
+                    --dhcp-option=option:dns-server,"${ATTACKER_NET_IP}" `# Optionally serve DNS if dnsmasq is also a resolver` \
+                    --no-resolv \
+                    --no-hosts \
+                    --listen-address="${ATTACKER_NET_IP}" \
+                    --log-dhcp # For debugging
+else
+    log "Attacker interface (ATTACKER_IF1) not defined. Skipping DHCP server start."
+fi
                 --log-dhcp # For debugging
 
 log "Enabling IP forwarding..."
@@ -179,8 +180,9 @@ NODE_ARGS="--mgmt_if=${MGMT_IF}"
 NODE_ARGS="${NODE_ARGS} --mitm_bridge=${MITM_BRIDGE}"
 NODE_ARGS="${NODE_ARGS} --mitm_switch_if=${MITM_SWITCH_IF}"
 NODE_ARGS="${NODE_ARGS} --mitm_supplicant_if=${MITM_SUPPLICANT_IF}"
-NODE_ARGS="${NODE_ARGS} --attacker_bridge_subnet=${ATTACKER_BRIDGE_IP%.*}.0/${ATTACKER_BRIDGE_NETMASK_CIDR}" # e.g. 172.16.100.0/24
-NODE_ARGS="${NODE_ARGS} --attacker_bridge=${ATTACKER_BRIDGE}" # Pass the attacker bridge name
+NODE_ARGS="${NODE_ARGS} --attacker_if=${ATTACKER_IF1}" # Pass the physical attacker interface name
+NODE_ARGS="${NODE_ARGS} --attacker_subnet=${ATTACKER_NET_IP%.*}.0/${ATTACKER_NET_CIDR}" # Pass the subnet defined on the physical interface
+# NODE_ARGS="${NODE_ARGS} --attacker_bridge=${ATTACKER_BRIDGE}" # Removed - No attacker bridge
 # Add other potential args needed by dolos.js/bridge_controller_adapted.js
 # NODE_ARGS="${NODE_ARGS} --use_network_manager=false" # Example if needed
 

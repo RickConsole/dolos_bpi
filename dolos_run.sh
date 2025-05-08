@@ -11,20 +11,16 @@ MITM_BRIDGE="dolos_bridge"
 
 # Attacker Network Interface: For operator machines
 ATTACKER_IF1="enp4s0" # The single physical interface for attackers
-# ATTACKER_IF2="lan3" # Removed - No second attacker port in this setup
-# ATTACKER_BRIDGE="attk_br" # Removed - No bridge needed for single interface
+# ATTACKER_IF2="lan3" # Potential second attacker adapter
 ATTACKER_NET_IP="172.16.100.1" # IP for the attacker interface itself
-ATTACKER_NET_CIDR="24" # Just the CIDR number
+ATTACKER_NET_CIDR="24"
 ATTACKER_DHCP_RANGE_START="172.16.100.100"
 ATTACKER_DHCP_RANGE_END="172.16.100.200"
 ATTACKER_DHCP_LEASE_TIME="12h"
 
-# Path to the main Node.js Dolos script
-# Assuming the adapted Node.js script will be named dolos_adapted.js or similar,
-# and it's in the same directory as this script.
+# Path to the main Node.js Dolos script,
 DOLOS_NODE_SCRIPT="./dolos.js" # This will likely need to be changed/adapted
 
-# --- Helper Functions ---
 log() {
     echo "[INFO] $1"
 }
@@ -50,7 +46,6 @@ cleanup() {
     # Check if lock file creation succeeded before proceeding
     if ! touch "$CLEANUP_LOCK_FILE" 2>/dev/null; then
         log "Failed to create cleanup lock file. Exiting cleanup."
-        # Optionally exit with an error code?
         return 1
     fi
 
@@ -87,18 +82,6 @@ cleanup() {
     fi
     run_cmd ip link set "$MITM_BRIDGE" down 2>/dev/null || true
     run_cmd ip link delete "$MITM_BRIDGE" type bridge 2>/dev/null || true # Use type bridge for deletion
-
-    # Optional: Restore interfaces to lanbr0 if that's the default
-    # log "Attempting to restore lan0-lan3 to lanbr0..."
-    # for iface in "$MITM_SWITCH_IF" "$MITM_SUPPLICANT_IF" "$ATTACKER_IF1" "$ATTACKER_IF2"; do
-    #   if ip link show lanbr0 &>/dev/null; then
-    #     run_cmd ip link set "$iface" master lanbr0 2>/dev/null || true
-    #   fi
-    #   run_cmd ip link set "$iface" up 2>/dev/null || true
-    # done
-    # if ip link show lanbr0 &>/dev/null; then
-    #    run_cmd ip link set lanbr0 up 2>/dev/null || true
-    # fi
 
     rm -f "$CLEANUP_LOCK_FILE" # Remove lock file
     log "Cleanup complete."
